@@ -3,7 +3,7 @@ import dns.resolver
 import re
 
 
-def parserArg():
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("domainName")
     args = parser.parse_args()
@@ -24,23 +24,16 @@ def resolve_records(domain):
 
 def parse_txt_records(txt_records) : 
     new_domains = []
-    new_IPs_address = []
+    new_IPs = []
+
     for txt_record in txt_records :
-        # DOMAIN
-        new_domain = extract_new_domain(txt_record)
-        if new_domain :
-            for i in new_domain : 
-                new_domains.append(i)
+        new_domains.extend(extract_new_domain(txt_record))
+        new_IPs.extend(extract_new_ip(txt_record))
 
-        # IP ADDRESS
-        new_IP_address = extract_new_ip(txt_record)
-        if new_IP_address :
-            for i in new_IP_address :
-                new_IPs_address.append(i)
         
-    return new_domains, new_IPs_address
+    return new_domains, new_IPs
 
-def extract_new_domain(txt_record):
+def extract_new_domain(txt_record) :
     return re.findall(
         rf"(?:[a-z0-9_]" + 
         rf"(?:[a-z0-9-_]{{0,61}}" + 
@@ -62,19 +55,21 @@ def show_result(result):
         print(f"{res} records : {result[res]}")
 
 def main():
-    new_domains = []
-    new_IPs_address = []
-    args = parserArg()
+    new_domains = set()
+    new_IPs = set()
+
+    args = parse_args()
     result = resolve_records(args.domainName)
-    new_domains_temp, new_IPs_address_temp = parse_txt_records(result['TXT'])
-    for i in new_domains_temp : 
-        new_domains.append(i)
-    for i in new_IPs_address_temp : 
-        new_IPs_address.append(i)
+
+    new_domains_temp, new_IPs_temp = parse_txt_records(result['TXT'])
+
+    new_domains.update(new_domains_temp)
+    new_IPs.update(new_IPs_temp)
 
     show_result(result)
-    print(f"\n Domain à réutilisé : \n {new_domains}")
-    print(f"\n IPs à réutilisé : \n {new_IPs_address}")
+
+    print("\nDomains found:", new_domains)
+    print("IPs found:", new_IPs)
 
 
 if __name__ == "__main__":
