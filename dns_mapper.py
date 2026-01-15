@@ -49,6 +49,15 @@ def extract_new_ip(txt_record) :
         txt_record,
         flags=re.IGNORECASE,)
 
+def reverse_dns(ip):
+    try:
+        reversed_name = dns.reversename.from_address(ip)
+        answers = dns.resolver.resolve(reversed_name, "PTR")
+        return [rdata.to_text().rstrip('.') for rdata in answers]
+    except Exception as err:
+        print(err)
+        return []
+
 
 def show_result(result):
     for res in result:
@@ -70,6 +79,12 @@ def main():
 
     print("\nDomains found:", new_domains)
     print("IPs found:", new_IPs)
+
+    if new_IPs :
+        for new_IP in new_IPs:
+            new_domains.update(reverse_dns(new_IP))
+        new_IPs = set()
+        print(new_domains)
 
 
 if __name__ == "__main__":
