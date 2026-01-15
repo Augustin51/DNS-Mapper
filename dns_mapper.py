@@ -1,7 +1,9 @@
 import argparse
 import dns.resolver
+import re
 
-def parserArg():
+
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("domainName")
     args = parser.parse_args()
@@ -20,14 +22,69 @@ def resolve_records(domain):
 
     return result
 
+def parse_txt_records(txt_records) : 
+    new_domains = []
+    new_IPs = []
+
+    for txt_record in txt_records :
+        new_domains.extend(extract_new_domain(txt_record))
+        new_IPs.extend(extract_new_ip(txt_record))
+
+        
+    return new_domains, new_IPs
+
+def extract_new_domain(txt_record) :
+    return re.findall(
+        rf"(?:[a-z0-9_]" + 
+        rf"(?:[a-z0-9-_]{{0,61}}" + 
+        rf"[a-z0-9_])?\.)" + 
+        r"+[a-z0-9][a-z0-9-_]{0,61}" + 
+        rf"[a-z]\.?",
+        txt_record,
+        flags=re.IGNORECASE,
+    )
+
+def extract_new_ip(txt_record) :
+    return re.findall(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})',
+        txt_record,
+        flags=re.IGNORECASE,)
+
+def reverse_dns(ip):
+    try:
+        reversed_name = dns.reversename.from_address(ip)
+        answers = dns.resolver.resolve(reversed_name, "PTR")
+        return [rdata.to_text().rstrip('.') for rdata in answers]
+    except Exception as err:
+        print(err)
+        return []
+
+
 def show_result(result):
     for res in result:
         print(f"{res} records : {result[res]}")
 
 def main():
-    args = parserArg()
+    new_domains = set()
+    new_IPs = set()
+
+    args = parse_args()
     result = resolve_records(args.domainName)
+
+    new_domains_temp, new_IPs_temp = parse_txt_records(result['TXT'])
+
+    new_domains.update(new_domains_temp)
+    new_IPs.update(new_IPs_temp)
+
     show_result(result)
+
+    print("\nDomains found:", new_domains)
+    print("IPs found:", new_IPs)
+
+    if new_IPs :
+        for new_IP in new_IPs:
+            new_domains.update(reverse_dns(new_IP))
+        new_IPs = set()
+        print(new_domains)
 
 
 if __name__ == "__main__":
