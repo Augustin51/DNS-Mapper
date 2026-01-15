@@ -22,31 +22,33 @@ def resolve_records(domain):
 
     return result
 
-def parse_txt_records(txt_records):
+def parse_dns_records(dns_records):
     new_domains = []
     new_IPs = []
-
-    for txt_record in txt_records:
-        new_domains.extend(extract_new_domain(txt_record))
-        new_IPs.extend(extract_new_ip(txt_record))
+    
+    for d in dns_records:
+        dns_record = dns_records[d]
+        for dns in dns_record :
+            new_domains.extend(extract_new_domain(dns))
+            new_IPs.extend(extract_new_ip(dns))
 
     return new_domains, new_IPs
 
-def extract_new_domain(txt_record):
+def extract_new_domain(dns_record):
     return re.findall(
         rf"(?:[a-z0-9_]" + 
         rf"(?:[a-z0-9-_]{{0,61}}" + 
         rf"[a-z0-9_])?\.)" + 
         r"+[a-z0-9][a-z0-9-_]{0,61}" + 
         rf"[a-z]\.?",
-        txt_record,
+        dns_record,
         flags=re.IGNORECASE,
     )
 
-def extract_new_ip(txt_record):
+def extract_new_ip(dns_record):
     return re.findall(
         r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})',
-        txt_record,
+        dns_record,
         flags=re.IGNORECASE,
     )
 
@@ -74,7 +76,7 @@ def main():
 
     current_domains = {args.domainName}
     depth = 1
-    max_depth = 3
+    max_depth = 10
 
     while current_domains and depth <= max_depth:
         results_by_depth[depth] = []
@@ -91,16 +93,14 @@ def main():
                 **dns_result
             })
 
-            new_domains, new_IPs = parse_txt_records(dns_result.get("TXT", []))
+            new_domains, new_IPs = parse_dns_records(dns_result)
             next_domains.update(new_domains)
 
             for ip in new_IPs:
                 next_domains.update(reverse_dns(ip))
 
-        print(f"{current_domains=} ")
         current_domains = next_domains
         depth += 1
-        print(f"{next_domains=} ")
     show_result(results_by_depth)
 
 
