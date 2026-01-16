@@ -1,7 +1,7 @@
 import argparse
 import dns.resolver
+import dns.reversename
 import re
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -22,69 +22,94 @@ def resolve_records(domain):
 
     return result
 
-def parse_txt_records(txt_records) : 
+def parse_dns_records(dns_records):
     new_domains = []
     new_IPs = []
+    
+    for d in dns_records:
+        dns_record = dns_records[d]
+        for dns in dns_record :
+            dns = strip_trailing_dot(dns)
+            new_domains.extend(extract_new_domain(dns))
+            new_IPs.extend(extract_new_ip(dns))
 
-    for txt_record in txt_records :
-        new_domains.extend(extract_new_domain(txt_record))
-        new_IPs.extend(extract_new_ip(txt_record))
-
-        
     return new_domains, new_IPs
 
-def extract_new_domain(txt_record) :
+def extract_new_domain(dns_record):
     return re.findall(
         rf"(?:[a-z0-9_]" + 
         rf"(?:[a-z0-9-_]{{0,61}}" + 
         rf"[a-z0-9_])?\.)" + 
         r"+[a-z0-9][a-z0-9-_]{0,61}" + 
         rf"[a-z]\.?",
-        txt_record,
+        dns_record,
         flags=re.IGNORECASE,
     )
 
-def extract_new_ip(txt_record) :
-    return re.findall(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})',
-        txt_record,
-        flags=re.IGNORECASE,)
+def extract_new_ip(dns_record):
+    return re.findall(
+        r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})',
+        dns_record,
+        flags=re.IGNORECASE,
+    )
 
 def reverse_dns(ip):
     try:
         reversed_name = dns.reversename.from_address(ip)
         answers = dns.resolver.resolve(reversed_name, "PTR")
-        return [rdata.to_text().rstrip('.') for rdata in answers]
-    except Exception as err:
-        print(err)
+        return [strip_trailing_dot(rdata.to_text()) for rdata in answers]
+    except Exception:
         return []
 
+def strip_trailing_dot(domain):
+    if domain.endswith('.'):
+        return domain[:-1]
+    return domain
 
-def show_result(result):
-    for res in result:
-        print(f"{res} records : {result[res]}")
+
+def show_result(results_by_depth):
+    for d, domains_list in results_by_depth.items():
+        print(f"\n=== Depth {d} ===")
+        for info in domains_list:
+            print(f"DNS: {info['DNS']}")
+            for rec_type in ['A', 'AAAA', 'CNAME', 'MX', 'TXT']:
+                print(f"{rec_type}: {info[rec_type]}")
 
 def main():
-    new_domains = set()
-    new_IPs = set()
-
     args = parse_args()
-    result = resolve_records(args.domainName)
 
-    new_domains_temp, new_IPs_temp = parse_txt_records(result['TXT'])
+    results_by_depth = {}
+    visited = set()
 
-    new_domains.update(new_domains_temp)
-    new_IPs.update(new_IPs_temp)
+    current_domains = {args.domainName}
+    depth = 1
+    max_depth = 10
 
-    show_result(result)
+    while current_domains and depth <= max_depth:
+        results_by_depth[depth] = []
+        next_domains = set()
 
-    print("\nDomains found:", new_domains)
-    print("IPs found:", new_IPs)
+        for domain in current_domains:
+            domain = strip_trailing_dot(domain)
+            if domain in visited:
+                continue
+            visited.add(domain)
 
-    if new_IPs :
-        for new_IP in new_IPs:
-            new_domains.update(reverse_dns(new_IP))
-        new_IPs = set()
-        print(new_domains)
+            dns_result = resolve_records(domain)
+            results_by_depth[depth].append({
+                "DNS": domain,
+                **dns_result
+            })
+
+            new_domains, new_IPs = parse_dns_records(dns_result)
+            next_domains.update(new_domains)
+
+            for ip in new_IPs:
+                next_domains.update(reverse_dns(ip))
+
+        current_domains = next_domains
+        depth += 1
+    show_result(results_by_depth)
 
 
 if __name__ == "__main__":
