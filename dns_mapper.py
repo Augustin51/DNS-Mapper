@@ -6,6 +6,7 @@ import re
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("domainName")
+    parser.add_argument("--depth", "-d", type=int, default=5)
     args = parser.parse_args()
     return args
 
@@ -83,7 +84,7 @@ def main():
 
     current_domains = {args.domainName}
     depth = 1
-    max_depth = 10
+    max_depth = args.depth
 
     while current_domains and depth <= max_depth:
         results_by_depth[depth] = []
