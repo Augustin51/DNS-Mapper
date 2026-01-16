@@ -29,6 +29,7 @@ def parse_dns_records(dns_records):
     for d in dns_records:
         dns_record = dns_records[d]
         for dns in dns_record :
+            dns = strip_trailing_dot(dns)
             new_domains.extend(extract_new_domain(dns))
             new_IPs.extend(extract_new_ip(dns))
 
@@ -56,9 +57,15 @@ def reverse_dns(ip):
     try:
         reversed_name = dns.reversename.from_address(ip)
         answers = dns.resolver.resolve(reversed_name, "PTR")
-        return [rdata.to_text().rstrip('.') for rdata in answers]
+        return [strip_trailing_dot(rdata.to_text()) for rdata in answers]
     except Exception:
         return []
+
+def strip_trailing_dot(domain):
+    if domain.endswith('.'):
+        return domain[:-1]
+    return domain
+
 
 def show_result(results_by_depth):
     for d, domains_list in results_by_depth.items():
@@ -83,6 +90,7 @@ def main():
         next_domains = set()
 
         for domain in current_domains:
+            domain = strip_trailing_dot(domain)
             if domain in visited:
                 continue
             visited.add(domain)
