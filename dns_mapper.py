@@ -88,6 +88,38 @@ def strip_trailing_dot(domain):
         return domain[:-1]
     return domain
 
+def extract_parent_domains(domain):
+    common_tlds = {
+        'com', 'org', 'net', 'edu', 'gov', 'io', 'co', 'fr', 'de', 'uk', 'eu',
+        'app', 'dev', 'cloud', 'tech', 'info', 'biz', 'xyz', 'online', 'site',
+        'me', 'tv', 'cc', 'us', 'ca', 'au', 'jp', 'cn', 'ru', 'br', 'in'
+    }
+    compound_tlds = {
+        'co.uk', 'com.au', 'co.jp', 'com.br', 'co.in', 'org.uk', 'net.au',
+        'ac.uk', 'gov.uk', 'org.au', 'com.cn', 'com.mx', 'co.nz', 'com.ar'
+    }
+    
+    parts = domain.lower().split('.')
+    parent_domains = []
+    
+    if len(parts) <= 2:
+        return parent_domains
+    
+    is_compound = False
+    if len(parts) >= 2:
+        potential_compound = f"{parts[-2]}.{parts[-1]}"
+        if potential_compound in compound_tlds:
+            is_compound = True
+    
+    min_parts = 3 if is_compound else 2
+    
+    for i in range(1, len(parts) - min_parts + 1):
+        parent = '.'.join(parts[i:])
+        if parent and parent != domain:
+            parent_domains.append(parent)
+    
+    return parent_domains
+
 def show_result_terminal(results_by_depth):
     BLUE = '\033[94m'
     CYAN = '\033[96m'
@@ -219,6 +251,10 @@ def main():
     visited = set()
 
     current_domains = {args.domainName}
+    
+    parent_domains = extract_parent_domains(args.domainName)
+    current_domains.update(parent_domains)
+    
     depth = 1
     max_depth = args.depth
 
