@@ -4,227 +4,152 @@ import dns.reversename
 import re
 import json
 
+# =========================
+# CONFIG
+# =========================
+
+dns.resolver.timeout = 2
+dns.resolver.lifetime = 2
+
+SRV_SERVICES = [
+    "_sip._tcp",
+    "_sip._udp",
+    "_xmpp-server._tcp",
+    "_xmpp-client._tcp",
+    "_ldap._tcp",
+    "_imaps._tcp",
+    "_submission._tcp",
+]
+
+COMMON_SUBDOMAINS = [
+    "www", "mail", "api", "dev", "test",
+    "staging", "preprod", "admin", "vpn",
+    "blog", "shop"
+]
+
+KNOWN_TLDS = {
+    "com", "net", "org", "fr", "co.uk", "gouv.fr"
+}
+
+# =========================
+# ARGUMENTS
+# =========================
+
 def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("domainName")
-    parser.add_argument("--output", "-o", type=str)
-    parser.add_argument("--depth", "-d", type=int, default=5)
-    args = parser.parse_args()
-    return args
+    parser = argparse.ArgumentParser(description="DNS Mapper (DNS only)")
+    parser.add_argument("domainName", help="Nom de domaine à analyser")
+    parser.add_argument("-o", "--output", help="Fichier de sortie JSON")
+    parser.add_argument("-d", "--depth", type=int, default=3, help="Profondeur de récursion")
+    parser.add_argument("-n", "--neighbour", type=int, default=2, help="Nombre d'IP voisines à scanner (default: 2)")
+    parser.add_argument("-s", "--subdomain", action="store_true", help="Activer la subdomain enumeration")
+    return parser.parse_args()
+
+# =========================
+# DNS RESOLUTION
+# =========================
 
 def resolve_records(domain):
-    result = {}
-    record_types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV']
-    
-    # Services SRV courants à scanner
-    srv_prefixes = [
-        '_sip._tcp', '_sip._udp', '_xmpp-server._tcp', '_xmpp-client._tcp',
-        '_ldap._tcp', '_kerberos._tcp', '_kerberos._udp', '_http._tcp',
-        '_https._tcp', '_imaps._tcp', '_pop3s._tcp', '_submission._tcp'
-    ]
+    records = {}
+    for rtype in ["A", "AAAA", "CNAME", "MX", "TXT"]:
+        try:
+            answers = dns.resolver.resolve(domain, rtype)
+            records[rtype] = [a.to_text() for a in answers]
+        except Exception:
+            records[rtype] = []
+    return records
 
-    for record_type in record_types:
-        if record_type == 'SRV':
-            srv_records = []
-            for prefix in srv_prefixes:
-                try:
-                    srv_domain = f"{prefix}.{domain}"
-                    answers = dns.resolver.resolve(srv_domain, 'SRV')
-                    for rdata in answers:
-                        srv_records.append(f"{prefix}: {rdata.priority} {rdata.weight} {rdata.port} {rdata.target}")
-                except:
-                    pass
-            result['SRV'] = srv_records if srv_records else ["No SRV record found"]
-        else:
-            try:
-                answers = dns.resolver.resolve(domain, record_type)
-                result[record_type] = [rdata.to_text() for rdata in answers]
-            except:
-                result[record_type] = [f"No {record_type} record found"]
+# =========================
+# STRATEGIES
+# =========================
 
-    return result
+def generic_strategy(dns_records):
+    domains = set()
+    ips = set()
 
-def parse_dns_records(dns_records):
-    new_domains = []
-    new_IPs = []
-    
-    for d in dns_records:
-        dns_record = dns_records[d]
-        for dns in dns_record :
-            dns = strip_trailing_dot(dns)
-            new_domains.extend(extract_new_domain(dns))
-            new_IPs.extend(extract_new_ip(dns))
+    for records in dns_records.values():
+        for r in records:
+            r = strip_trailing_dot(r)
+            domains |= extract_domains(r)
+            ips |= extract_ips(r)
 
-    return new_domains, new_IPs
+    return domains, ips
 
-def extract_new_domain(dns_record):
-    return re.findall(
-        rf"(?:[a-z0-9_]" + 
-        rf"(?:[a-z0-9-_]{{0,61}}" + 
-        rf"[a-z0-9_])?\.)" + 
-        r"+[a-z0-9][a-z0-9-_]{0,61}" + 
-        rf"[a-z]\.?",
-        dns_record,
-        flags=re.IGNORECASE,
-    )
+def srv_strategy(domain):
+    found = set()
+    for service in SRV_SERVICES:
+        try:
+            answers = dns.resolver.resolve(f"{service}.{domain}", "SRV")
+            for r in answers:
+                found.add(strip_trailing_dot(str(r.target)))
+        except Exception:
+            pass
+    return found
 
-def extract_new_ip(dns_record):
-    return re.findall(
-        r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})',
-        dns_record,
-        flags=re.IGNORECASE,
-    )
+def crawl_to_tld(domain):
+    parts = domain.split(".")
+    found = set()
+    for i in range(1, len(parts)):
+        candidate = ".".join(parts[i:])
+        if candidate in KNOWN_TLDS:
+            break
+        found.add(candidate)
+    return found
+
+def subdomain_strategy(domain):
+    return {f"{s}.{domain}" for s in COMMON_SUBDOMAINS}
 
 def reverse_dns(ip):
     try:
-        reversed_name = dns.reversename.from_address(ip)
-        answers = dns.resolver.resolve(reversed_name, ".")
-        return [strip_trailing_dot(rdata.to_text()) for rdata in answers]
+        rev = dns.reversename.from_address(ip)
+        answers = dns.resolver.resolve(rev, "PTR")
+        return {strip_trailing_dot(a.to_text()) for a in answers}
     except Exception:
-        return []
+        return set()
+
+def ip_neighbors(ip, radius):
+    found = set()
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return found
+
+    try:
+        base = int(parts[-1])
+    except ValueError:
+        return found
+
+    for offset in range(-radius, radius + 1):
+        if offset == 0:
+            continue
+        n = base + offset
+        if 0 <= n <= 255:
+            neighbor = ".".join(parts[:-1] + [str(n)])
+            found |= reverse_dns(neighbor)
+
+    return found
+
+# =========================
+# HELPERS
+# =========================
+
+def extract_domains(text):
+    return set(re.findall(
+        r"(?:[a-z0-9-]+\.)+[a-z]{2,}",
+        text,
+        flags=re.IGNORECASE
+    ))
+
+def extract_ips(text):
+    return set(re.findall(
+        r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
+        text
+    ))
 
 def strip_trailing_dot(domain):
-    if domain.endswith('.'):
-        return domain[:-1]
-    return domain
+    return domain[:-1] if domain.endswith(".") else domain
 
-def extract_parent_domains(domain):
-    common_tlds = {
-        'com', 'org', 'net', 'edu', 'gov', 'io', 'co', 'fr', 'de', 'uk', 'eu',
-        'app', 'dev', 'cloud', 'tech', 'info', 'biz', 'xyz', 'online', 'site',
-        'me', 'tv', 'cc', 'us', 'ca', 'au', 'jp', 'cn', 'ru', 'br', 'in'
-    }
-    compound_tlds = {
-        'co.uk', 'com.au', 'co.jp', 'com.br', 'co.in', 'org.uk', 'net.au',
-        'ac.uk', 'gov.uk', 'org.au', 'com.cn', 'com.mx', 'co.nz', 'com.ar'
-    }
-    
-    parts = domain.lower().split('.')
-    parent_domains = []
-    
-    if len(parts) <= 2:
-        return parent_domains
-    
-    is_compound = False
-    if len(parts) >= 2:
-        potential_compound = f"{parts[-2]}.{parts[-1]}"
-        if potential_compound in compound_tlds:
-            is_compound = True
-    
-    min_parts = 3 if is_compound else 2
-    
-    for i in range(1, len(parts) - min_parts + 1):
-        parent = '.'.join(parts[i:])
-        if parent and parent != domain:
-            parent_domains.append(parent)
-    
-    return parent_domains
-
-def get_default_subdomains():
-    return [
-        # Web & API
-        'www', 'www2', 'www3', 'web', 'app', 'api', 'api2', 'api3',
-        'dev', 'dev2', 'staging', 'stage', 'test', 'testing', 'qa',
-        'prod', 'production', 'demo', 'beta', 'alpha', 'preview',
-        
-        # Mail
-        'mail', 'mail2', 'smtp', 'pop', 'pop3', 'imap', 'webmail',
-        'email', 'mx', 'mx1', 'mx2', 'exchange', 'outlook',
-        
-        # Admin & Management
-        'admin', 'administrator', 'panel', 'cpanel', 'whm', 'plesk',
-        'manage', 'manager', 'management', 'portal', 'dashboard',
-        'cms', 'console', 'control', 'root', 'secure',
-        
-        # FTP & Files
-        'ftp', 'sftp', 'files', 'file', 'upload', 'download',
-        'media', 'static', 'assets', 'cdn', 'img', 'images',
-        
-        # Database & Backend
-        'db', 'db1', 'db2', 'database', 'mysql', 'sql', 'postgres',
-        'mongo', 'redis', 'cache', 'backend', 'server',
-        
-        # VPN & Remote
-        'vpn', 'vpn2', 'remote', 'rdp', 'ssh', 'gateway', 'gw',
-        'proxy', 'sslvpn', 'access', 'citrix',
-        
-        # Cloud & Infrastructure
-        'cloud', 'aws', 'azure', 'gcp', 's3', 'storage',
-        'backup', 'bk', 'node', 'node1', 'node2', 'cluster',
-        
-        # Services
-        'blog', 'forum', 'shop', 'store', 'cart', 'pay', 'payment',
-        'billing', 'invoice', 'support', 'help', 'helpdesk', 'ticket',
-        'docs', 'doc', 'wiki', 'kb', 'knowledge', 'status',
-        
-        # Monitoring & Logs
-        'monitor', 'monitoring', 'grafana', 'kibana', 'elk', 'logs',
-        'log', 'syslog', 'nagios', 'zabbix', 'prometheus',
-        
-        # Auth & Security
-        'auth', 'login', 'signin', 'sso', 'oauth', 'ldap', 'ad',
-        'identity', 'id', 'accounts', 'account',
-        
-        # Communication
-        'chat', 'slack', 'teams', 'meet', 'video', 'conf',
-        'voip', 'sip', 'pbx', 'asterisk',
-        
-        # Mobile
-        'mobile', 'm', 'ios', 'android',
-        
-        # Misc
-        'ns', 'ns1', 'ns2', 'ns3', 'dns', 'dns1', 'dns2',
-        'ntp', 'time', 'git', 'gitlab', 'github', 'svn', 'repo',
-        'jenkins', 'ci', 'cd', 'build', 'deploy',
-        'internal', 'intranet', 'extranet', 'corp', 'corporate',
-        'old', 'new', 'v1', 'v2', 'legacy', 'archive'
-    ]
-
-def enumerate_subdomains(domain):
-    found_subdomains = []
-    
-    subdomains = get_default_subdomains()
-        
-    for subdomain in subdomains:
-        full_domain = f"{subdomain}.{domain}"
-        try:
-            dns.resolver.resolve(full_domain, 'A')
-            found_subdomains.append(full_domain)
-        except:
-            pass
-        
-    return found_subdomains
-
-def get_ip_neighbors(ip):
-    found_domains = []
-    
-    parts = ip.split('.')
-    if len(parts) != 4:
-        return found_domains
-    
-    try:
-        base = int(parts[3])
-    except ValueError:
-        return found_domains
-    
-    neighbors = []
-    if base > 1:
-        neighbors.append(base - 1)
-    if base < 254:
-        neighbors.append(base + 1)
-    
-    for i in neighbors:
-        neighbor_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.{i}"
-        try:
-            reversed_name = dns.reversename.from_address(neighbor_ip)
-            answers = dns.resolver.resolve(reversed_name, "PTR")
-            for rdata in answers:
-                domain = strip_trailing_dot(rdata.to_text())
-                found_domains.append(domain)
-        except:
-            pass
-    
-    return found_domains
+# =========================
+# OUTPUT
+# =========================
 
 def show_result_terminal(results_by_depth):
     BLUE = '\033[94m'
@@ -269,7 +194,7 @@ def show_result_terminal(results_by_depth):
                 icon = record_icons.get(rt, "•")
                 records = info.get(rt, [])
                 
-                has_records = records and not any("No " in r for r in records)
+                has_records = records and len(records) > 0
                 
                 if has_records:
                     print(f"{GREEN}  │  {BOLD}{BLUE}{icon} {rt}:{END}")
@@ -280,124 +205,59 @@ def show_result_terminal(results_by_depth):
             
             print(f"{GREEN}  └{'─'*40}{END}")
 
-def show_result_output(results_by_depth, output_file):
-    extension = output_file.lower().split('.')[-1]
-    
-    if extension == 'json':
-        export_json(results_by_depth, output_file)
-    elif extension == 'txt':
-        export_txt(results_by_depth, output_file)
-    else:
-        print(f"Format non supporté: {extension}. Utilisez .json ou .txt")
-        return
-    
-    print(f"Résultats exportés vers: {output_file}")
 
-def export_json(results_by_depth, output_file):
-    output_data = {}
-    
-    for depth, domains_list in results_by_depth.items():
-        output_data[f"depth_{depth}"] = []
-        for info in domains_list:
-            domain_data = {
-                "domain": info['DNS'],
-                "records": {}
-            }
-            for rt in ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]:
-                records = info.get(rt, [])
-                has_records = records and not any("No " in r for r in records)
-                domain_data["records"][rt] = records if has_records else []
-            output_data[f"depth_{depth}"].append(domain_data)
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, indent=2, ensure_ascii=False)
+def export_json(results, filename):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
 
-def export_txt(results_by_depth, output_file):
-    record_types = ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]
-    total_domains = sum(len(domains) for domains in results_by_depth.values())
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write(f"{'DNS MAPPER RESULTS':^80}\n")
-        f.write(f"{'Total domains scanned: ' + str(total_domains):^80}\n")
-        f.write("=" * 80 + "\n\n")
-        
-        for depth, domains_list in results_by_depth.items():
-            if not domains_list:
-                continue
-            
-            f.write("-" * 80 + "\n")
-            f.write(f"{'DEPTH ' + str(depth):^80}\n")
-            f.write("-" * 80 + "\n\n")
-            
-            for info in domains_list:
-                domain = info['DNS']
-                f.write(f"Domain: {domain}\n")
-                f.write("-" * 40 + "\n")
-                
-                for rt in record_types:
-                    records = info.get(rt, [])
-                    has_records = records and not any("No " in r for r in records)
-                    
-                    if has_records:
-                        f.write(f"  {rt}:\n")
-                        for r in records:
-                            f.write(f"    - {r}\n")
-                    else:
-                        f.write(f"  {rt}: Non trouvé\n")
-                
-                f.write("\n")
-
-
+# =========================
+# MAIN
+# =========================
 
 def main():
     args = parse_args()
 
-    results_by_depth = {}
     visited = set()
-
     current_domains = {args.domainName}
-    
-    parent_domains = extract_parent_domains(args.domainName)
-    current_domains.update(parent_domains)
+    results = {}
 
-    found_subs = enumerate_subdomains(args.domainName)
-    current_domains.update(found_subs)
-    
     depth = 1
-    max_depth = args.depth
-
-    while current_domains and depth <= max_depth:
-        results_by_depth[depth] = []
+    while current_domains and depth <= args.depth:
+        results[depth] = []
         next_domains = set()
 
         for domain in current_domains:
             domain = strip_trailing_dot(domain)
+            
             if domain in visited:
                 continue
+            
+            print(f"[Depth {depth}] Scanning: {domain}")
             visited.add(domain)
 
-            dns_result = resolve_records(domain)
-            results_by_depth[depth].append({
-                "DNS": domain,
-                **dns_result
-            })
+            dns_records = resolve_records(domain)
+            entry = {"DNS": domain, **dns_records}
+            results[depth].append(entry)
 
-            new_domains, new_IPs = parse_dns_records(dns_result)
-            next_domains.update(new_domains)
+            new_domains, ips = generic_strategy(dns_records)
+            next_domains |= new_domains
+            next_domains |= srv_strategy(domain)
+            next_domains |= crawl_to_tld(domain)
 
-            for ip in new_IPs:
-                next_domains.update(reverse_dns(ip))
-                next_domains.update(get_ip_neighbors(ip))
+            if args.subdomain:
+                next_domains |= subdomain_strategy(domain)
+
+            for ip in ips:
+                next_domains |= reverse_dns(ip)
+                next_domains |= ip_neighbors(ip, args.neighbour)
 
         current_domains = next_domains
         depth += 1
-    
-    show_result_terminal(results_by_depth)
-    
-    if args.output:
-        show_result_output(results_by_depth, args.output)
 
+    show_result_terminal(results)
+
+    if args.output:
+        export_json(results, args.output)
 
 if __name__ == "__main__":
     main()
