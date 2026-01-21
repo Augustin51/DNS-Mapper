@@ -14,14 +14,33 @@ def parse_args():
 
 def resolve_records(domain):
     result = {}
-    record_types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT']
+    record_types = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV']
+    
+    # Services SRV courants à scanner
+    srv_prefixes = [
+        '_sip._tcp', '_sip._udp', '_xmpp-server._tcp', '_xmpp-client._tcp',
+        '_ldap._tcp', '_kerberos._tcp', '_kerberos._udp', '_http._tcp',
+        '_https._tcp', '_imaps._tcp', '_pop3s._tcp', '_submission._tcp'
+    ]
 
     for record_type in record_types:
-        try:
-            answers = dns.resolver.resolve(domain, record_type)
-            result[record_type] = [rdata.to_text() for rdata in answers]
-        except:
-            result[record_type] = [f"No {record_type} record found"]
+        if record_type == 'SRV':
+            srv_records = []
+            for prefix in srv_prefixes:
+                try:
+                    srv_domain = f"{prefix}.{domain}"
+                    answers = dns.resolver.resolve(srv_domain, 'SRV')
+                    for rdata in answers:
+                        srv_records.append(f"{prefix}: {rdata.priority} {rdata.weight} {rdata.port} {rdata.target}")
+                except:
+                    pass
+            result['SRV'] = srv_records if srv_records else ["No SRV record found"]
+        else:
+            try:
+                answers = dns.resolver.resolve(domain, record_type)
+                result[record_type] = [rdata.to_text() for rdata in answers]
+            except:
+                result[record_type] = [f"No {record_type} record found"]
 
     return result
 
@@ -59,7 +78,7 @@ def extract_new_ip(dns_record):
 def reverse_dns(ip):
     try:
         reversed_name = dns.reversename.from_address(ip)
-        answers = dns.resolver.resolve(reversed_name, "PTR")
+        answers = dns.resolver.resolve(reversed_name, ".")
         return [strip_trailing_dot(rdata.to_text()) for rdata in answers]
     except Exception:
         return []
@@ -83,9 +102,10 @@ def show_result_terminal(results_by_depth):
         "AAAA": "🔗",
         "CNAME": "🔀",
         "MX": "📧",
-        "TXT": "📝"
+        "TXT": "📝",
+        "SRV": "🔧"
     }
-    record_types = ["A", "AAAA", "CNAME", "MX", "TXT"]
+    record_types = ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]
 
     total_domains = sum(len(domains) for domains in results_by_depth.values())
     
@@ -145,7 +165,7 @@ def export_json(results_by_depth, output_file):
                 "domain": info['DNS'],
                 "records": {}
             }
-            for rt in ["A", "AAAA", "CNAME", "MX", "TXT"]:
+            for rt in ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]:
                 records = info.get(rt, [])
                 has_records = records and not any("No " in r for r in records)
                 domain_data["records"][rt] = records if has_records else []
@@ -155,7 +175,7 @@ def export_json(results_by_depth, output_file):
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
 def export_txt(results_by_depth, output_file):
-    record_types = ["A", "AAAA", "CNAME", "MX", "TXT"]
+    record_types = ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]
     total_domains = sum(len(domains) for domains in results_by_depth.values())
     
     with open(output_file, 'w', encoding='utf-8') as f:
