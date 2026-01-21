@@ -195,6 +195,37 @@ def enumerate_subdomains(domain):
         
     return found_subdomains
 
+def get_ip_neighbors(ip):
+    found_domains = []
+    
+    parts = ip.split('.')
+    if len(parts) != 4:
+        return found_domains
+    
+    try:
+        base = int(parts[3])
+    except ValueError:
+        return found_domains
+    
+    neighbors = []
+    if base > 1:
+        neighbors.append(base - 1)
+    if base < 254:
+        neighbors.append(base + 1)
+    
+    for i in neighbors:
+        neighbor_ip = f"{parts[0]}.{parts[1]}.{parts[2]}.{i}"
+        try:
+            reversed_name = dns.reversename.from_address(neighbor_ip)
+            answers = dns.resolver.resolve(reversed_name, "PTR")
+            for rdata in answers:
+                domain = strip_trailing_dot(rdata.to_text())
+                found_domains.append(domain)
+        except:
+            pass
+    
+    return found_domains
+
 def show_result_terminal(results_by_depth):
     BLUE = '\033[94m'
     CYAN = '\033[96m'
@@ -357,6 +388,7 @@ def main():
 
             for ip in new_IPs:
                 next_domains.update(reverse_dns(ip))
+                next_domains.update(get_ip_neighbors(ip))
 
         current_domains = next_domains
         depth += 1
