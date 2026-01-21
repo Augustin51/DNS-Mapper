@@ -5,8 +5,11 @@ import re
 import json
 
 # =========================
-# CONFIGURATION
+# CONFIG
 # =========================
+
+dns.resolver.timeout = 2
+dns.resolver.lifetime = 2
 
 SRV_SERVICES = [
     "_sip._tcp",
@@ -20,8 +23,8 @@ SRV_SERVICES = [
 
 COMMON_SUBDOMAINS = [
     "www", "mail", "api", "dev", "test",
-    "staging", "preprod", "intra",
-    "admin", "vpn", "blog", "shop"
+    "staging", "preprod", "admin", "vpn",
+    "blog", "shop"
 ]
 
 KNOWN_TLDS = {
@@ -33,10 +36,12 @@ KNOWN_TLDS = {
 # =========================
 
 def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("domainName")
-    parser.add_argument("--output", "-o", type=str)
-    parser.add_argument("--depth", "-d", type=int, default=5)
+    parser = argparse.ArgumentParser(description="DNS Mapper (DNS only)")
+    parser.add_argument("domainName", help="Nom de domaine à analyser")
+    parser.add_argument("-o", "--output", help="Fichier de sortie JSON")
+    parser.add_argument("-d", "--depth", type=int, default=3, help="Profondeur de récursion")
+    parser.add_argument("-n", "--neighbour", type=int, default=2, help="Nombre d'IP voisines à scanner (default: 2)")
+    parser.add_argument("-s", "--subdomain", action="store_true", help="Activer la subdomain enumeration")
     return parser.parse_args()
 
 # =========================
@@ -44,17 +49,17 @@ def parse_args():
 # =========================
 
 def resolve_records(domain):
-    result = {}
-    for record_type in ["A", "AAAA", "CNAME", "MX", "TXT"]:
+    records = {}
+    for rtype in ["A", "AAAA", "CNAME", "MX", "TXT"]:
         try:
-            answers = dns.resolver.resolve(domain, record_type)
-            result[record_type] = [r.to_text() for r in answers]
+            answers = dns.resolver.resolve(domain, rtype)
+            records[rtype] = [a.to_text() for a in answers]
         except Exception:
-            result[record_type] = []
-    return result
+            records[rtype] = []
+    return records
 
 # =========================
-# STRATÉGIES
+# STRATEGIES
 # =========================
 
 def generic_strategy(dns_records):
@@ -64,14 +69,13 @@ def generic_strategy(dns_records):
     for records in dns_records.values():
         for r in records:
             r = strip_trailing_dot(r)
-            domains.update(extract_domains(r))
-            ips.update(extract_ips(r))
+            domains |= extract_domains(r)
+            ips |= extract_ips(r)
 
     return domains, ips
 
 def srv_strategy(domain):
     found = set()
-
     for service in SRV_SERVICES:
         try:
             answers = dns.resolver.resolve(f"{service}.{domain}", "SRV")
@@ -79,40 +83,43 @@ def srv_strategy(domain):
                 found.add(strip_trailing_dot(str(r.target)))
         except Exception:
             pass
-
     return found
 
 def crawl_to_tld(domain):
     parts = domain.split(".")
     found = set()
-
     for i in range(1, len(parts)):
         candidate = ".".join(parts[i:])
         if candidate in KNOWN_TLDS:
             break
         found.add(candidate)
-
     return found
 
 def subdomain_strategy(domain):
-    return {f"{sub}.{domain}" for sub in COMMON_SUBDOMAINS}
+    return {f"{s}.{domain}" for s in COMMON_SUBDOMAINS}
 
 def reverse_dns(ip):
     try:
         rev = dns.reversename.from_address(ip)
         answers = dns.resolver.resolve(rev, "PTR")
-        return {strip_trailing_dot(r.to_text()) for r in answers}
+        return {strip_trailing_dot(a.to_text()) for a in answers}
     except Exception:
         return set()
 
-def ip_neighbors(ip):
+def ip_neighbors(ip, radius):
     found = set()
     parts = ip.split(".")
     if len(parts) != 4:
         return found
 
-    base = int(parts[-1])
-    for offset in [-1, 1]:
+    try:
+        base = int(parts[-1])
+    except ValueError:
+        return found
+
+    for offset in range(-radius, radius + 1):
+        if offset == 0:
+            continue
         n = base + offset
         if 0 <= n <= 255:
             neighbor = ".".join(parts[:-1] + [str(n)])
@@ -137,24 +144,67 @@ def extract_ips(text):
         text
     ))
 
-def strip_trailing_dot(d):
-    return d[:-1] if d.endswith(".") else d
+def strip_trailing_dot(domain):
+    return domain[:-1] if domain.endswith(".") else domain
 
 # =========================
 # OUTPUT
 # =========================
 
-def show_result_terminal(results):
-    for depth, entries in results.items():
-        print(f"\n=== DEPTH {depth} ===")
-        for entry in entries:
-            print(f"\n🌍 {entry['DNS']}")
-            for rt, values in entry.items():
-                if rt == "DNS":
-                    continue
-                if values:
-                    for v in values:
-                        print(f"  {rt}: {v}")
+def show_result_terminal(results_by_depth):
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+    
+    record_icons = {
+        "A": "🌐",
+        "AAAA": "🔗",
+        "CNAME": "🔀",
+        "MX": "📧",
+        "TXT": "📝",
+        "SRV": "🔧"
+    }
+    record_types = ["A", "AAAA", "CNAME", "MX", "TXT", "SRV"]
+
+    total_domains = sum(len(domains) for domains in results_by_depth.values())
+    
+    print(f"\n{BOLD}{CYAN}╔{'═'*78}╗{END}")
+    print(f"{BOLD}{CYAN}║{'DNS MAPPER RESULTS':^78}║{END}")
+    print(f"{BOLD}{CYAN}║{f'Total domains scanned: {total_domains}':^78}║{END}")
+    print(f"{BOLD}{CYAN}╚{'═'*78}╝{END}")
+
+    for depth, domains_list in results_by_depth.items():
+        if not domains_list:
+            continue
+            
+        print(f"\n{BOLD}{YELLOW}┌{'─'*78}┐{END}")
+        print(f"{BOLD}{YELLOW}│{'🔍 DEPTH ' + str(depth):^77}│{END}")
+        print(f"{BOLD}{YELLOW}└{'─'*78}┘{END}")
+
+        for i, info in enumerate(domains_list):
+            domain = info['DNS']
+            print(f"\n{BOLD}{GREEN}  ┌── 🌍 {domain}{END}")
+            print(f"{GREEN}  │{END}")
+
+            for rt in record_types:
+                icon = record_icons.get(rt, "•")
+                records = info.get(rt, [])
+                
+                has_records = records and len(records) > 0
+                
+                if has_records:
+                    print(f"{GREEN}  │  {BOLD}{BLUE}{icon} {rt}:{END}")
+                    for r in records:
+                        print(f"{GREEN}  │     {CYAN}└─ {r}{END}")
+                else:
+                    print(f"{GREEN}  │  {RED}{icon} {rt}: ✗ Non trouvé{END}")
+            
+            print(f"{GREEN}  └{'─'*40}{END}")
+
 
 def export_json(results, filename):
     with open(filename, "w", encoding="utf-8") as f:
@@ -168,37 +218,40 @@ def main():
     args = parse_args()
 
     visited = set()
-    current = {args.domainName}
+    current_domains = {args.domainName}
     results = {}
 
     depth = 1
-    while current and depth <= args.depth:
+    while current_domains and depth <= args.depth:
         results[depth] = []
         next_domains = set()
 
-        for domain in current:
+        for domain in current_domains:
             domain = strip_trailing_dot(domain)
+            
             if domain in visited:
                 continue
+            
+            print(f"[Depth {depth}] Scanning: {domain}")
             visited.add(domain)
 
             dns_records = resolve_records(domain)
             entry = {"DNS": domain, **dns_records}
-
             results[depth].append(entry)
 
-            # STRATÉGIES
             new_domains, ips = generic_strategy(dns_records)
             next_domains |= new_domains
             next_domains |= srv_strategy(domain)
             next_domains |= crawl_to_tld(domain)
-            next_domains |= subdomain_strategy(domain)
+
+            if args.subdomain:
+                next_domains |= subdomain_strategy(domain)
 
             for ip in ips:
                 next_domains |= reverse_dns(ip)
-                next_domains |= ip_neighbors(ip)
+                next_domains |= ip_neighbors(ip, args.neighbour)
 
-        current = next_domains
+        current_domains = next_domains
         depth += 1
 
     show_result_terminal(results)
