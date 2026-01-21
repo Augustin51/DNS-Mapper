@@ -120,6 +120,81 @@ def extract_parent_domains(domain):
     
     return parent_domains
 
+def get_default_subdomains():
+    return [
+        # Web & API
+        'www', 'www2', 'www3', 'web', 'app', 'api', 'api2', 'api3',
+        'dev', 'dev2', 'staging', 'stage', 'test', 'testing', 'qa',
+        'prod', 'production', 'demo', 'beta', 'alpha', 'preview',
+        
+        # Mail
+        'mail', 'mail2', 'smtp', 'pop', 'pop3', 'imap', 'webmail',
+        'email', 'mx', 'mx1', 'mx2', 'exchange', 'outlook',
+        
+        # Admin & Management
+        'admin', 'administrator', 'panel', 'cpanel', 'whm', 'plesk',
+        'manage', 'manager', 'management', 'portal', 'dashboard',
+        'cms', 'console', 'control', 'root', 'secure',
+        
+        # FTP & Files
+        'ftp', 'sftp', 'files', 'file', 'upload', 'download',
+        'media', 'static', 'assets', 'cdn', 'img', 'images',
+        
+        # Database & Backend
+        'db', 'db1', 'db2', 'database', 'mysql', 'sql', 'postgres',
+        'mongo', 'redis', 'cache', 'backend', 'server',
+        
+        # VPN & Remote
+        'vpn', 'vpn2', 'remote', 'rdp', 'ssh', 'gateway', 'gw',
+        'proxy', 'sslvpn', 'access', 'citrix',
+        
+        # Cloud & Infrastructure
+        'cloud', 'aws', 'azure', 'gcp', 's3', 'storage',
+        'backup', 'bk', 'node', 'node1', 'node2', 'cluster',
+        
+        # Services
+        'blog', 'forum', 'shop', 'store', 'cart', 'pay', 'payment',
+        'billing', 'invoice', 'support', 'help', 'helpdesk', 'ticket',
+        'docs', 'doc', 'wiki', 'kb', 'knowledge', 'status',
+        
+        # Monitoring & Logs
+        'monitor', 'monitoring', 'grafana', 'kibana', 'elk', 'logs',
+        'log', 'syslog', 'nagios', 'zabbix', 'prometheus',
+        
+        # Auth & Security
+        'auth', 'login', 'signin', 'sso', 'oauth', 'ldap', 'ad',
+        'identity', 'id', 'accounts', 'account',
+        
+        # Communication
+        'chat', 'slack', 'teams', 'meet', 'video', 'conf',
+        'voip', 'sip', 'pbx', 'asterisk',
+        
+        # Mobile
+        'mobile', 'm', 'ios', 'android',
+        
+        # Misc
+        'ns', 'ns1', 'ns2', 'ns3', 'dns', 'dns1', 'dns2',
+        'ntp', 'time', 'git', 'gitlab', 'github', 'svn', 'repo',
+        'jenkins', 'ci', 'cd', 'build', 'deploy',
+        'internal', 'intranet', 'extranet', 'corp', 'corporate',
+        'old', 'new', 'v1', 'v2', 'legacy', 'archive'
+    ]
+
+def enumerate_subdomains(domain):
+    found_subdomains = []
+    
+    subdomains = get_default_subdomains()
+        
+    for subdomain in subdomains:
+        full_domain = f"{subdomain}.{domain}"
+        try:
+            dns.resolver.resolve(full_domain, 'A')
+            found_subdomains.append(full_domain)
+        except:
+            pass
+        
+    return found_subdomains
+
 def show_result_terminal(results_by_depth):
     BLUE = '\033[94m'
     CYAN = '\033[96m'
@@ -254,6 +329,9 @@ def main():
     
     parent_domains = extract_parent_domains(args.domainName)
     current_domains.update(parent_domains)
+
+    found_subs = enumerate_subdomains(args.domainName)
+    current_domains.update(found_subs)
     
     depth = 1
     max_depth = args.depth
