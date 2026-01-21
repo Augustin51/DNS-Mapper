@@ -4,10 +4,8 @@ import dns.reversename
 import re
 import json
 
-# =========================
-# CONFIG
-# =========================
 
+# CONFIG
 dns.resolver.timeout = 2
 dns.resolver.lifetime = 2
 
@@ -31,10 +29,8 @@ KNOWN_TLDS = {
     "com", "net", "org", "fr", "co.uk", "gouv.fr"
 }
 
-# =========================
-# ARGUMENTS
-# =========================
 
+# ARGUMENTS
 def parse_args():
     parser = argparse.ArgumentParser(description="DNS Mapper (DNS only)")
     parser.add_argument("domainName", help="Nom de domaine à analyser")
@@ -44,10 +40,8 @@ def parse_args():
     parser.add_argument("-s", "--subdomain", action="store_true", help="Activer la subdomain enumeration")
     return parser.parse_args()
 
-# =========================
-# DNS RESOLUTION
-# =========================
 
+# DNS RESOLUTION
 def resolve_records(domain):
     records = {}
     for rtype in ["A", "AAAA", "CNAME", "MX", "TXT"]:
@@ -58,10 +52,8 @@ def resolve_records(domain):
             records[rtype] = []
     return records
 
-# =========================
-# STRATEGIES
-# =========================
 
+# STRATEGIES
 def generic_strategy(dns_records):
     domains = set()
     ips = set()
@@ -127,10 +119,8 @@ def ip_neighbors(ip, radius):
 
     return found
 
-# =========================
-# HELPERS
-# =========================
 
+# HELPERS
 def extract_domains(text):
     return set(re.findall(
         r"(?:[a-z0-9-]+\.)+[a-z]{2,}",
@@ -147,10 +137,8 @@ def extract_ips(text):
 def strip_trailing_dot(domain):
     return domain[:-1] if domain.endswith(".") else domain
 
-# =========================
-# OUTPUT
-# =========================
 
+# OUTPUT
 def show_result_terminal(results_by_depth):
     BLUE = '\033[94m'
     CYAN = '\033[96m'
@@ -210,10 +198,8 @@ def export_json(results, filename):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-# =========================
-# MAIN
-# =========================
 
+# MAIN
 def main():
     args = parse_args()
 
@@ -258,6 +244,8 @@ def main():
 
     if args.output:
         export_json(results, args.output)
+
+
 
 if __name__ == "__main__":
     main()
