@@ -2,6 +2,7 @@ import argparse
 import dns.resolver
 import dns.reversename
 import re
+import json
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -121,6 +122,74 @@ def show_result_terminal(results_by_depth):
             
             print(f"{GREEN}  └{'─'*40}{END}")
 
+def show_result_output(results_by_depth, output_file):
+    extension = output_file.lower().split('.')[-1]
+    
+    if extension == 'json':
+        export_json(results_by_depth, output_file)
+    elif extension == 'txt':
+        export_txt(results_by_depth, output_file)
+    else:
+        print(f"Format non supporté: {extension}. Utilisez .json ou .txt")
+        return
+    
+    print(f"Résultats exportés vers: {output_file}")
+
+def export_json(results_by_depth, output_file):
+    output_data = {}
+    
+    for depth, domains_list in results_by_depth.items():
+        output_data[f"depth_{depth}"] = []
+        for info in domains_list:
+            domain_data = {
+                "domain": info['DNS'],
+                "records": {}
+            }
+            for rt in ["A", "AAAA", "CNAME", "MX", "TXT"]:
+                records = info.get(rt, [])
+                has_records = records and not any("No " in r for r in records)
+                domain_data["records"][rt] = records if has_records else []
+            output_data[f"depth_{depth}"].append(domain_data)
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+
+def export_txt(results_by_depth, output_file):
+    record_types = ["A", "AAAA", "CNAME", "MX", "TXT"]
+    total_domains = sum(len(domains) for domains in results_by_depth.values())
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write(f"{'DNS MAPPER RESULTS':^80}\n")
+        f.write(f"{'Total domains scanned: ' + str(total_domains):^80}\n")
+        f.write("=" * 80 + "\n\n")
+        
+        for depth, domains_list in results_by_depth.items():
+            if not domains_list:
+                continue
+            
+            f.write("-" * 80 + "\n")
+            f.write(f"{'DEPTH ' + str(depth):^80}\n")
+            f.write("-" * 80 + "\n\n")
+            
+            for info in domains_list:
+                domain = info['DNS']
+                f.write(f"Domain: {domain}\n")
+                f.write("-" * 40 + "\n")
+                
+                for rt in record_types:
+                    records = info.get(rt, [])
+                    has_records = records and not any("No " in r for r in records)
+                    
+                    if has_records:
+                        f.write(f"  {rt}:\n")
+                        for r in records:
+                            f.write(f"    - {r}\n")
+                    else:
+                        f.write(f"  {rt}: Non trouvé\n")
+                
+                f.write("\n")
+
 
 
 def main():
@@ -157,7 +226,11 @@ def main():
 
         current_domains = next_domains
         depth += 1
+    
     show_result_terminal(results_by_depth)
+    
+    if args.output:
+        show_result_output(results_by_depth, args.output)
 
 
 if __name__ == "__main__":
